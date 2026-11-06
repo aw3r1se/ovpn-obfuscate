@@ -22,6 +22,7 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#include "obfs_features.h"
 #endif
 
 #include "syshead.h"
@@ -2959,7 +2960,22 @@ frame_finalize_options(struct context *c, const struct options *o)
     tailroom += COMP_EXTRA_BUFFER(payload_size);
 #endif
 
+    /* UDP obfuscation appends up to obfs_udp_padding bytes after the packet */
+#if OBFS_ENABLE_UDP
+    if (o->obfs_udp_key)
+    {
+        tailroom += o->obfs_udp_padding;
+    }
+#endif
+
     frame->buf.payload_size = payload_size;
+#if OBFS_ENABLE_WSS
+    if (o->wss_host)
+    {
+        /* TLS records and the masked WebSocket header share the socket buffers. */
+        tailroom += 4096;
+    }
+#endif
     frame->buf.headroom = headroom;
     frame->buf.tailroom = tailroom;
 }

@@ -45,6 +45,33 @@ TESTS = $(test_binaries)
 endif
 check_PROGRAMS = $(test_binaries)
 
+if HAVE_OBFS_UDP
+test_binaries += obfs_udp_testdriver
+obfs_udp_testdriver_CFLAGS = -I$(top_srcdir)/src/openvpn -I$(top_srcdir)/src/compat @TEST_CFLAGS@
+obfs_udp_testdriver_LDFLAGS = @TEST_LDFLAGS@
+obfs_udp_testdriver_SOURCES = mock_msg.c mock_msg.h test_common.h mock_get_random.c $(top_srcdir)/src/openvpn/buffer.c $(top_srcdir)/src/openvpn/platform.c $(top_srcdir)/src/openvpn/win32-util.c
+nodist_obfs_udp_testdriver_SOURCES = test_obfs_udp.c $(top_srcdir)/src/openvpn/obfs_udp.c
+EXTRA_DIST += test_obfs_udp.c
+endif
+
+if HAVE_OBFS_TCP
+test_binaries += obfs_tcp_testdriver
+obfs_tcp_testdriver_CFLAGS = -I$(top_srcdir)/src/openvpn -I$(top_srcdir)/src/compat @TEST_CFLAGS@
+obfs_tcp_testdriver_LDFLAGS = @TEST_LDFLAGS@
+obfs_tcp_testdriver_SOURCES = mock_msg.c mock_msg.h test_common.h mock_get_random.c $(top_srcdir)/src/openvpn/buffer.c $(top_srcdir)/src/openvpn/platform.c $(top_srcdir)/src/openvpn/win32-util.c
+nodist_obfs_tcp_testdriver_SOURCES = test_obfs_tcp.c $(top_srcdir)/src/openvpn/obfs_tcp.c
+EXTRA_DIST += test_obfs_tcp.c
+endif
+
+if HAVE_OBFS_WSS
+test_binaries += obfs_wss_testdriver
+obfs_wss_testdriver_CFLAGS = -I$(top_srcdir)/src/openvpn -I$(top_srcdir)/src/compat @TEST_CFLAGS@
+obfs_wss_testdriver_LDFLAGS = @TEST_LDFLAGS@
+obfs_wss_testdriver_SOURCES = mock_msg.c mock_msg.h test_common.h mock_get_random.c $(top_srcdir)/src/openvpn/buffer.c $(top_srcdir)/src/openvpn/platform.c $(top_srcdir)/src/openvpn/win32-util.c
+nodist_obfs_wss_testdriver_SOURCES = test_obfs_wss.c $(top_srcdir)/src/openvpn/wss_frame.c
+EXTRA_DIST += test_obfs_wss.c
+endif
+
 if HAVE_SITNL
 check_PROGRAMS += networking_testdriver
 endif

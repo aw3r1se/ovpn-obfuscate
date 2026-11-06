@@ -333,6 +333,21 @@ struct options
     bool ifconfig_nowarn;
     int shaper;
 
+    /* UDP obfuscation (--obfuscate-udp <key> <padding>) */
+    const char *obfs_udp_key;
+    int obfs_udp_padding;
+
+    /* Client-side transports. Keys are never logged. */
+    const char *obfs_tcp_key;
+    const char *wss_host;
+    const char *wss_uri;
+    const char *wss_sni;
+    bool wss_sni_enabled;
+    bool wss_allow_self_signed;
+    int wss_header_count;
+    const char *wss_header_name[20];
+    const char *wss_header_value[20];
+
     int proto_force;
 
     bool mtu_test;

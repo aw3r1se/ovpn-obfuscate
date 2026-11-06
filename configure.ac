@@ -1413,4 +1413,34 @@ AC_CONFIG_FILES([
 	sample/Makefile
 ])
 AC_CONFIG_FILES([tests/t_client.sh], [chmod +x tests/t_client.sh])
+# Feature patches add independent transport source files.
+AM_CONDITIONAL([HAVE_OBFS_UDP], [test -f "$srcdir/src/openvpn/obfs_udp.c"])
+AS_IF([test -f "$srcdir/src/openvpn/obfs_udp.c"], [
+    AS_IF([test "x$with_crypto_library" != xopenssl],
+          [AC_MSG_ERROR([Transport obfuscation modules require the OpenSSL backend])])
+    AS_IF([test ! -f "$srcdir/src/openvpn/obfs_udp.h"],
+          [AC_MSG_ERROR([Incomplete udp module: obfs_udp.h])])
+    AC_DEFINE([OBFS_ENABLE_UDP], [1], [Build the UDP transport])
+])
+AM_CONDITIONAL([HAVE_OBFS_TCP], [test -f "$srcdir/src/openvpn/obfs_tcp.c"])
+AS_IF([test -f "$srcdir/src/openvpn/obfs_tcp.c"], [
+    AS_IF([test "x$with_crypto_library" != xopenssl],
+          [AC_MSG_ERROR([Transport obfuscation modules require the OpenSSL backend])])
+    AS_IF([test ! -f "$srcdir/src/openvpn/obfs_tcp.h"],
+          [AC_MSG_ERROR([Incomplete tcp module: obfs_tcp.h])])
+    AC_DEFINE([OBFS_ENABLE_TCP], [1], [Build the TCP transport])
+])
+AM_CONDITIONAL([HAVE_OBFS_WSS], [test -f "$srcdir/src/openvpn/wss_client.c"])
+AS_IF([test -f "$srcdir/src/openvpn/wss_client.c"], [
+    AS_IF([test "x$with_crypto_library" != xopenssl],
+          [AC_MSG_ERROR([Transport obfuscation modules require the OpenSSL backend])])
+    AS_IF([test ! -f "$srcdir/src/openvpn/wss_client.h"],
+          [AC_MSG_ERROR([Incomplete wss module: wss_client.h])])
+    AS_IF([test ! -f "$srcdir/src/openvpn/wss_frame.c"],
+          [AC_MSG_ERROR([Incomplete wss module: wss_frame.c])])
+    AS_IF([test ! -f "$srcdir/src/openvpn/wss_frame.h"],
+          [AC_MSG_ERROR([Incomplete wss module: wss_frame.h])])
+    AC_DEFINE([OBFS_ENABLE_WSS], [1], [Build the WSS transport])
+])
+
 AC_OUTPUT

@@ -23,6 +23,7 @@
 #ifndef SOCKET_H
 #define SOCKET_H
 
+#include "obfs_features.h"
 #include "buffer.h"
 #include "common.h"
 #include "error.h"
@@ -35,6 +36,12 @@
 #include "misc.h"
 #include "tun.h"
 #include "socket_util.h"
+#if OBFS_ENABLE_TCP
+#include "obfs_tcp.h"
+#endif
+#if OBFS_ENABLE_WSS
+#include "wss_client.h"
+#endif
 
 /*
  * OpenVPN's default port number as assigned by IANA.
@@ -130,6 +137,7 @@ struct stream_buf
     /** if true, a fatal TCP error has occurred,
      *  requiring that connection be restarted */
     bool error;
+    bool obfs_length;
 #if PORT_SHARE
 #define PS_DISABLED 0
 #define PS_ENABLED  1
@@ -162,9 +170,22 @@ void socket_set_buffers(socket_descriptor_t fd, const struct socket_buffer_size 
  * defines try to abstract away our implementation differences between
  * using sockets on Posix vs. Win32.
  */
+/* Forward declaration; defined in obfs_udp.h. */
+struct obfs_udp;
+struct obfs_tcp;
+struct wss_client;
+
 struct link_socket
 {
     struct link_socket_info info;
+
+    /* UDP obfuscation (--obfuscate-udp); lazily initialized on first packet.
+     * The same link_socket is shared by all instances in server mode, so one
+     * context covers both the read and the per-instance write path. */
+    struct obfs_udp *obfs;
+    bool obfs_init_done;
+    struct obfs_tcp *obfs_tcp;
+    struct wss_client *wss;
 
     struct event_arg ev_arg; /**< this struct will store a pointer to either mi or
                               * link_socket, depending on the event type, to keep
@@ -559,6 +580,12 @@ bool stream_buf_read_setup_dowork(struct stream_buf *sb);
 static inline bool
 stream_buf_read_setup(struct link_socket *sock)
 {
+#if OBFS_ENABLE_WSS
+    if (sock->wss)
+    {
+        return !obfs_wss_pending(sock);
+    }
+#endif
     if (link_socket_connection_oriented(sock))
     {
         return stream_buf_read_setup_dowork(&sock->stream_buf);

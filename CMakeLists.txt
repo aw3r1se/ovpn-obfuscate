@@ -35,6 +35,14 @@ option(MBED "BUILD with mbed" OFF)
 set(MBED_INCLUDE_PATH "" CACHE STRING "Path to mbed TLS include directory")
 set(MBED_LIBRARY_PATH "" CACHE STRING "Path to mbed library directory")
 option(WOLFSSL "BUILD with wolfSSL" OFF)
+
+if(MBED OR WOLFSSL)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/openvpn/obfs_udp.c"
+       OR EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/openvpn/obfs_tcp.c"
+       OR EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/openvpn/wss_client.c")
+        message(FATAL_ERROR "Transport obfuscation modules require the OpenSSL backend")
+    endif()
+endif()
 option(ENABLE_LZ4 "BUILD with lz4" ON)
 option(ENABLE_LZO "BUILD with lzo" ON)
 option(ENABLE_PKCS11 "BUILD with pkcs11-helper" ON)
@@ -623,6 +631,39 @@ set(SOURCE_FILES
 
 add_executable(openvpn ${SOURCE_FILES})
 
+# Only compile transport implementations present in this source tree.
+set(OBFS_SOURCES_udp
+    src/openvpn/obfs_udp.c
+    src/openvpn/obfs_udp.h
+)
+set(OBFS_SOURCES_tcp
+    src/openvpn/obfs_tcp.c
+    src/openvpn/obfs_tcp.h
+)
+set(OBFS_SOURCES_wss
+    src/openvpn/wss_client.c
+    src/openvpn/wss_client.h
+    src/openvpn/wss_frame.c
+    src/openvpn/wss_frame.h
+)
+foreach(feature udp tcp wss)
+    list(GET OBFS_SOURCES_${feature} 0 marker)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${marker}")
+        foreach(source IN LISTS OBFS_SOURCES_${feature})
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+                message(FATAL_ERROR "Incomplete ${feature} module: ${source}")
+            endif()
+        endforeach()
+        string(TOUPPER "${feature}" feature_upper)
+        add_compile_definitions(OBFS_ENABLE_${feature_upper}=1)
+        target_sources(openvpn PRIVATE ${OBFS_SOURCES_${feature}})
+        list(APPEND OBFS_UNIT_TESTS test_obfs_${feature})
+        set(OBFS_TEST_SOURCES_${feature} ${OBFS_SOURCES_${feature}})
+        list(FILTER OBFS_TEST_SOURCES_${feature} INCLUDE REGEX "[.]c$")
+        list(REMOVE_ITEM OBFS_TEST_SOURCES_${feature} src/openvpn/wss_client.c)
+    endif()
+endforeach()
+
 add_library_deps(openvpn)
 
 target_compile_options(openvpn PRIVATE -DDEFAULT_DNS_UPDOWN=\"${DNS_UPDOWN_PATH}\")
@@ -674,6 +715,8 @@ if (BUILD_TESTING)
         "test_user_pass"
         "test_push_update_msg"
         )
+
+    list(APPEND unit_tests ${OBFS_UNIT_TESTS})
 
     if (WIN32)
         list(APPEND unit_tests
@@ -878,6 +921,14 @@ if (BUILD_TESTING)
         src/openvpn/xkey_helper.c
         src/openvpn/base64.c
         )
+
+    foreach(feature udp tcp wss)
+        if(TARGET test_obfs_${feature})
+            target_sources(test_obfs_${feature} PRIVATE
+                tests/unit_tests/openvpn/mock_get_random.c
+                src/openvpn/buffer.c ${OBFS_TEST_SOURCES_${feature}})
+        endif()
+    endforeach()
 
     target_link_libraries(test_socket PUBLIC ${RESOLV_LIBRARIES})
     target_sources(test_socket PRIVATE

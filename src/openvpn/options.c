@@ -28,6 +28,7 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#include "obfs_features.h"
 #endif
 #ifdef HAVE_CONFIG_VERSION_H
 #include "config-version.h"
@@ -44,6 +45,9 @@
 #include "ssl.h"
 #include "ssl_ncp.h"
 #include "options.h"
+#if OBFS_ENABLE_UDP
+#include "obfs_udp.h"
+#endif
 #include "misc.h"
 #include "socket_util.h"
 #include "packet_id.h"
@@ -199,6 +203,24 @@ static const char usage_message[] =
     "                  /dev/net/tun, /dev/tun, /dev/tap, etc.\n"
 #if defined(ENABLE_DCO)
     "--disable-dco   : Do not attempt using Data Channel Offload.\n"
+#endif
+#if OBFS_ENABLE_TCP
+    "--obfuscate key : client TCP Scrambler (experimental).\n"
+#endif
+#if OBFS_ENABLE_UDP
+    "--obfuscate-udp key padding : UDP obfuscation.\n"
+#endif
+#if OBFS_ENABLE_WSS
+    "--wss-proxy host uri : Legacy WebSocket-over-TLS client.\n"
+#endif
+#if OBFS_ENABLE_WSS
+    "--wss-proxy-sni [name] : Enable SNI for the outer TLS connection.\n"
+#endif
+#if OBFS_ENABLE_WSS
+    "--wss-proxy-allow-self-signed-cert : Skip outer TLS certificate verification.\n"
+#endif
+#if OBFS_ENABLE_WSS
+    "--wss-proxy-header name [value] : Override/add an HTTP Upgrade header.\n"
 #endif
     "--lladdr hw     : Set the link layer address of the tap device.\n"
     "--topology t    : Set --dev tun topology: 'net30', 'p2p', or 'subnet'.\n"
@@ -6581,6 +6603,89 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
             goto err;
         }
     }
+#if OBFS_ENABLE_TCP
+    else if (streq(p[0], "obfuscate") && p[1] && !p[2])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        if (!*p[1] || strlen(p[1]) > 4096)
+        {
+            msg(msglevel, "obfuscate: key length must be 1..4096 characters");
+            goto err;
+        }
+        options->obfs_tcp_key = p[1];
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    else if (streq(p[0], "wss-proxy") && p[1] && !p[3])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        if (!*p[1] || strlen(p[1]) > 255 || strchr(p[1], '/')
+            || strpbrk(p[1], "\r\n") || (p[2] && (p[2][0] != '/' || strlen(p[2]) > 2048
+                                                   || strpbrk(p[2], "\r\n "))))
+        {
+            msg(msglevel, "wss-proxy: invalid Host or URI");
+            goto err;
+        }
+        options->wss_host = p[1];
+        options->wss_uri = p[2] ? p[2] : "/";
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    else if (streq(p[0], "wss-proxy-sni") && !p[2])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        options->wss_sni_enabled = true;
+        options->wss_sni = p[1];
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    else if (streq(p[0], "wss-proxy-allow-self-signed-cert") && !p[1])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        options->wss_allow_self_signed = true;
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    else if (streq(p[0], "wss-proxy-header") && p[1] && !p[3])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        if (options->wss_header_count >= 20 || !*p[1] || strlen(p[1]) > 128
+            || strpbrk(p[1], ":\r\n ") || (p[2] && (strlen(p[2]) > 1024 || strpbrk(p[2], "\r\n"))))
+        {
+            msg(msglevel, "wss-proxy-header: invalid header or too many headers");
+            goto err;
+        }
+        int index = options->wss_header_count++;
+        options->wss_header_name[index] = p[1];
+        options->wss_header_value[index] = p[2] ? p[2] : "";
+    }
+#endif
+#if OBFS_ENABLE_UDP
+    else if (streq(p[0], "obfuscate-udp") && p[1] && p[2] && !p[3])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        if (strlen(p[1]) != OBFS_UDP_KEY_HEX_LEN)
+        {
+            msg(msglevel, "obfuscate-udp: key must be exactly %d hex characters",
+                OBFS_UDP_KEY_HEX_LEN);
+            goto err;
+        }
+        for (const char *h = p[1]; *h; ++h)
+        {
+            if (!isxdigit((unsigned char)*h))
+            {
+                msg(msglevel, "obfuscate-udp: key must be hexadecimal");
+                goto err;
+            }
+        }
+        if (!atoi_constrained(p[2], &options->obfs_udp_padding, p[0], 0, OBFS_UDP_MAX_PADDING,
+                              msglevel))
+        {
+            goto err;
+        }
+        options->obfs_udp_key = p[1];
+    }
+#endif
     else if (streq(p[0], "port") && p[1] && !p[2])
     {
         VERIFY_PERMISSION(OPT_P_GENERAL | OPT_P_CONNECTION);

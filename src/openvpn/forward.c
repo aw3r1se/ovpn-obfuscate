@@ -22,6 +22,7 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#include "obfs_features.h"
 #endif
 
 #include "syshead.h"
@@ -42,8 +43,30 @@
 #include "dco.h"
 #include "auth_token.h"
 #include "tun_afunix.h"
+#if OBFS_ENABLE_UDP
+#include "obfs_udp.h"
+#endif
+#if OBFS_ENABLE_TCP
+#include "obfs_tcp.h"
+#endif
 
 #include "memdbg.h"
+
+#if OBFS_ENABLE_WSS
+static bool
+sockets_wss_wants_write(const struct context *c)
+{
+    for (int i = 0; i < c->c1.link_sockets_num; ++i)
+    {
+        const struct link_socket *sock = c->c2.link_sockets[i];
+        if (sock && sock->wss && obfs_wss_wants_write(sock))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 counter_type link_read_bytes_global;  /* GLOBAL */
 counter_type link_write_bytes_global; /* GLOBAL */
@@ -941,6 +964,23 @@ link_socket_write_post_size_adjust(int *size, int size_delta, struct buffer *buf
     }
 }
 
+#if OBFS_ENABLE_UDP
+/*
+ * Lazily create the UDP obfuscation context for this link socket.  The socket
+ * is shared by all instances in server mode, so a single context serves the
+ * read path (top context) and every per-instance write path.
+ */
+static void
+link_socket_obfs_init(struct context *c, struct link_socket *sock)
+{
+    if (!sock->obfs_init_done)
+    {
+        sock->obfs_init_done = true;
+        sock->obfs = obfs_udp_init(c->options.obfs_udp_key, c->options.obfs_udp_padding);
+    }
+}
+
+#endif
 /*
  * Output: c->c2.buf
  */
@@ -1004,6 +1044,28 @@ read_incoming_link(struct context *c, struct link_socket *sock)
 
     /* Remove socks header if applicable */
     socks_postprocess_incoming_link(c, sock);
+
+#if OBFS_ENABLE_TCP
+    if (sock->obfs_tcp && c->c2.buf.len > 0
+        && !obfs_tcp_decode(sock->obfs_tcp, &c->c2.buf))
+    {
+        c->c2.buf.len = 0;
+        register_signal(c->sig, SIGUSR1, "obfs-tcp-decode-failed");
+    }
+#endif
+
+    /* Reverse UDP obfuscation (--obfuscate-udp) before the packet is processed */
+#if OBFS_ENABLE_UDP
+    if (c->options.obfs_udp_key && c->c2.buf.len > 0 && proto_is_udp(sock->info.proto))
+    {
+        link_socket_obfs_init(c, sock);
+        if (!sock->obfs || !obfs_udp_deobfuscate(sock->obfs, &c->c2.buf))
+        {
+            msg(D_LINK_ERRORS, "OBFS: deobfuscate failed, dropping packet");
+            c->c2.buf.len = 0; /* treat as an empty read so the packet is dropped */
+        }
+    }
+#endif
 }
 
 bool
@@ -1773,6 +1835,24 @@ process_outgoing_link(struct context *c, struct link_socket *sock)
     struct gc_arena gc = gc_new();
     int error_code = 0;
 
+#if OBFS_ENABLE_WSS
+    /*
+     * Flush TLS output left over from a previous partial write.  Only take the
+     * shortcut while there is nothing else to send: a pending to_link must go
+     * through the normal path below, otherwise it stays queued for another loop
+     * iteration and a failing flush would silently drop it.
+     */
+    if (sock->wss && c->c2.to_link.len <= 0 && obfs_wss_wants_write(sock))
+    {
+        if (!obfs_wss_flush(sock))
+        {
+            register_signal(c->sig, SIGUSR1, "wss-write-failed");
+        }
+        gc_free(&gc);
+        return;
+    }
+#endif
+
     if (c->c2.to_link.len > 0 && c->c2.to_link.len <= c->c2.frame.buf.payload_size)
     {
         /*
@@ -1781,6 +1861,31 @@ process_outgoing_link(struct context *c, struct link_socket *sock)
          */
         int size = 0;
         ASSERT(link_socket_actual_defined(c->c2.to_link_addr));
+
+#if OBFS_ENABLE_TCP
+        if (sock->obfs_tcp && !obfs_tcp_encode(sock->obfs_tcp, &c->c2.to_link))
+        {
+            register_signal(c->sig, SIGUSR1, "obfs-tcp-encode-failed");
+            buf_reset(&c->c2.to_link);
+            gc_free(&gc);
+            return;
+        }
+#endif
+
+        /* Apply UDP obfuscation (--obfuscate-udp) just before hitting the wire */
+#if OBFS_ENABLE_UDP
+        if (c->options.obfs_udp_key && proto_is_udp(sock->info.proto))
+        {
+            link_socket_obfs_init(c, sock);
+            if (!sock->obfs || !obfs_udp_obfuscate(sock->obfs, &c->c2.to_link))
+            {
+                msg(D_LINK_ERRORS, "OBFS: obfuscate failed, dropping packet");
+                buf_reset(&c->c2.to_link);
+                gc_free(&gc);
+                return;
+            }
+        }
+#endif
 
 #ifdef ENABLE_DEBUG
         /* In gremlin-test mode, we may choose to drop this packet */
@@ -1848,6 +1953,10 @@ process_outgoing_link(struct context *c, struct link_socket *sock)
         /* Check return status */
         error_code = openvpn_errno();
         check_status(size, "write", sock, NULL);
+        if (size < 0 && (sock->obfs_tcp || sock->wss))
+        {
+            register_signal(c->sig, SIGUSR1, "obfs-transport-write-failed");
+        }
 
         if (size > 0)
         {
@@ -2058,6 +2167,10 @@ multi_io_process_flags(struct context *c, struct event_set *es, struct link_sock
 {
     unsigned int socket = 0;
     unsigned int tuntap = 0;
+    bool transport_output = false;
+#if OBFS_ENABLE_WSS
+    transport_output = sockets_wss_wants_write(c);
+#endif
     static uintptr_t tun_shift = TUN_SHIFT;
     static uintptr_t err_shift = ERR_SHIFT;
 
@@ -2069,7 +2182,7 @@ multi_io_process_flags(struct context *c, struct event_set *es, struct link_sock
         wait_signal(es, (void *)err_shift);
     }
 
-    if (flags & IOW_TO_LINK)
+    if ((flags & IOW_TO_LINK) || transport_output)
     {
         if (flags & IOW_SHAPER)
         {

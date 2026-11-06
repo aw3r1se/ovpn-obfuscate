@@ -170,3 +170,19 @@ if WIN32
 openvpn_SOURCES += openvpn_win32_resources.rc wfp_block.c wfp_block.h
 openvpn_LDADD += -lgdi32 -lws2_32 -lwininet -lcrypt32 -liphlpapi -lwinmm -lfwpuclnt -lrpcrt4 -lncrypt -lsetupapi -lbcrypt
 endif
+
+# configure detects installed optional transport implementations.
+openvpn_SOURCES += obfs_features.h
+nodist_openvpn_SOURCES =
+if HAVE_OBFS_UDP
+nodist_openvpn_SOURCES += obfs_udp.c obfs_udp.h
+EXTRA_DIST += obfs_udp.c obfs_udp.h
+endif
+if HAVE_OBFS_TCP
+nodist_openvpn_SOURCES += obfs_tcp.c obfs_tcp.h
+EXTRA_DIST += obfs_tcp.c obfs_tcp.h
+endif
+if HAVE_OBFS_WSS
+nodist_openvpn_SOURCES += wss_client.c wss_client.h wss_frame.c wss_frame.h
+EXTRA_DIST += wss_client.c wss_client.h wss_frame.c wss_frame.h
+endif

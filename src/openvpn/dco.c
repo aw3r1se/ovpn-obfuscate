@@ -312,6 +312,13 @@ dco_check_option_ce(const struct connection_entry *ce, msglvl_t msglevel, int mo
 bool
 dco_check_startup_option(msglvl_t msglevel, const struct options *o)
 {
+    if (o->obfs_tcp_key || o->obfs_udp_key || o->wss_host)
+    {
+        msg(msglevel, "Note: transport obfuscation requires userspace packet processing, "
+                      "disabling data channel offload.");
+        return false;
+    }
+
     /* check if no dev name was specified at all. In the case,
      * later logic will most likely stop OpenVPN, so no need to
      * print any message here.

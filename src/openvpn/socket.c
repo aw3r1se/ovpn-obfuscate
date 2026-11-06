@@ -22,6 +22,7 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#include "obfs_features.h"
 #endif
 
 #include "syshead.h"
@@ -29,6 +30,12 @@
 #include "socket.h"
 #include "fdmisc.h"
 #include "misc.h"
+#if OBFS_ENABLE_UDP
+#include "obfs_udp.h"
+#endif
+#if OBFS_ENABLE_TCP
+#include <openssl/rand.h>
+#endif
 #include "gremlin.h"
 #include "plugin.h"
 #include "ps.h"
@@ -46,7 +53,12 @@ sockets_read_residual(const struct context *c)
 {
     for (int i = 0; i < c->c1.link_sockets_num; i++)
     {
+#if OBFS_ENABLE_WSS
+        if ((c->c2.link_sockets[i]->wss && obfs_wss_pending(c->c2.link_sockets[i]))
+            || c->c2.link_sockets[i]->stream_buf.residual_fully_formed)
+#else
         if (c->c2.link_sockets[i]->stream_buf.residual_fully_formed)
+#endif
         {
             return true;
         }
@@ -1391,6 +1403,47 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
     sock->info.plugins = c->plugins;
     sock->server_poll_timeout = &c->c2.server_poll_interval;
 
+    if ((o->obfs_tcp_key || o->wss_host) && proto != PROTO_TCP_CLIENT)
+    {
+        msg(M_FATAL, "obfuscate and wss-proxy require proto tcp-client");
+    }
+    if (o->obfs_tcp_key && o->obfs_udp_key)
+    {
+        msg(M_FATAL, "obfuscate and obfuscate-udp cannot be combined");
+    }
+#if OBFS_ENABLE_UDP
+    if (o->obfs_udp_key && proto != PROTO_UDP)
+    {
+        msg(M_FATAL, "obfuscate-udp requires proto udp");
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    if (!o->wss_host && (o->wss_sni_enabled || o->wss_allow_self_signed || o->wss_header_count))
+    {
+        msg(M_FATAL, "wss-proxy is required for the other WSS options");
+    }
+#endif
+#if OBFS_ENABLE_TCP
+    if (o->obfs_tcp_key)
+    {
+        sock->obfs_tcp = obfs_tcp_new(o->obfs_tcp_key);
+        if (!sock->obfs_tcp)
+        {
+            msg(M_FATAL, "OBFS TCP: cannot create scrambler");
+        }
+    }
+#endif
+#if OBFS_ENABLE_WSS
+    if (o->wss_host)
+    {
+        sock->wss = obfs_wss_new(o);
+        if (!sock->wss)
+        {
+            msg(M_FATAL, "WSS: cannot create TLS transport");
+        }
+    }
+#endif
+
     sock->mode = mode;
     if (mode == LS_MODE_TCP_ACCEPT_FROM)
     {
@@ -1684,6 +1737,7 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
 
     /* initialize buffers */
     socket_frame_init(frame, sock);
+    sock->stream_buf.obfs_length = sock->obfs_tcp != NULL;
 
     /* Second chance to resolv/create socket */
     resolve_remote(sock, 2, sig_info);
@@ -1757,6 +1811,13 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
         goto done;
     }
 
+#if OBFS_ENABLE_WSS
+    if (sock->wss && !obfs_wss_connect(sock, sig_info))
+    {
+        register_signal(sig_info, SIGUSR1, "wss-connect-failed");
+        goto done;
+    }
+#endif
     phase2_set_socket_flags(sock);
     linksock_print_addr(sock);
 
@@ -1822,6 +1883,15 @@ link_socket_close(struct link_socket *sock)
         free_buf(&sock->stream_buf_data);
         if (!gremlin)
         {
+#if OBFS_ENABLE_UDP
+            obfs_udp_free(sock->obfs);
+#endif
+#if OBFS_ENABLE_TCP
+            obfs_tcp_free(sock->obfs_tcp);
+#endif
+#if OBFS_ENABLE_WSS
+            obfs_wss_free(sock->wss);
+#endif
             free(sock);
         }
     }
@@ -2175,6 +2245,12 @@ stream_buf_added(struct stream_buf *sb, int length_added)
 
         ASSERT(buf_read(&sb->buf, &net_size, sizeof(net_size)));
         sb->len = ntohps(net_size);
+#if OBFS_ENABLE_TCP
+        if (sb->obfs_length)
+        {
+            sb->len = obfs_tcp_length_decode(sb->len, sb->maxlen);
+        }
+#endif
 
         if (sb->len < 1 || sb->len > sb->maxlen)
         {
@@ -2252,6 +2328,12 @@ bad_address_length(int actual, int expected)
 int
 link_socket_read_tcp(struct link_socket *sock, struct buffer *buf)
 {
+#if OBFS_ENABLE_WSS
+    if (sock->wss)
+    {
+        return obfs_wss_read(sock, buf);
+    }
+#endif
     int len = 0;
 
     if (!sock->stream_buf.residual_fully_formed)
@@ -2421,9 +2503,27 @@ link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
 ssize_t
 link_socket_write_tcp(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *to)
 {
+#if OBFS_ENABLE_WSS
+    if (sock->wss)
+    {
+        return obfs_wss_write(sock, buf, 2);
+    }
+#endif
     packet_size_type len = BLEN(buf);
     dmsg(D_STREAM_DEBUG, "STREAM: WRITE %d offset=%d", (int)len, buf->offset);
     ASSERT(len <= sock->stream_buf.maxlen);
+#if OBFS_ENABLE_TCP
+    if (obfs_tcp_active(sock->obfs_tcp))
+    {
+        uint8_t random;
+        if (RAND_bytes(&random, 1) != 1)
+        {
+            sock->stream_reset = true;
+            return -1;
+        }
+        len = (packet_size_type)obfs_tcp_length_encode(len, random % 7);
+    }
+#endif
     len = htonps(len);
     ASSERT(buf_write_prepend(buf, &len, sizeof(len)));
 #ifdef _WIN32
@@ -2542,7 +2642,11 @@ socket_recv_queue(struct link_socket *sock, int maxsize)
         int status;
 
         /* reset buf to its initial state */
+#if OBFS_ENABLE_WSS
+        if (proto_is_udp(sock->info.proto) || sock->wss)
+#else
         if (proto_is_udp(sock->info.proto))
+#endif
         {
             sock->reads.buf = sock->reads.buf_init;
         }
@@ -2923,6 +3027,20 @@ socket_set(struct link_socket *s, struct event_set *es, unsigned int rwflags, vo
             ASSERT(!persistent);
             rwflags &= ~EVENT_READ;
         }
+
+#if OBFS_ENABLE_WSS
+        if (s->wss && obfs_wss_wants_write(s))
+        {
+#ifdef _WIN32
+            /* Start overlapped I/O even when only TLS control output is pending. */
+            obfs_wss_flush(s);
+#endif
+            if (obfs_wss_wants_write(s))
+            {
+                rwflags |= EVENT_WRITE;
+            }
+        }
+#endif
 
 #ifdef _WIN32
         if (rwflags & EVENT_READ)

@@ -1,3 +1,129 @@
+OpenVPN 2.7.9 with transport obfuscation patches
+================================================
+
+This is a modified build of OpenVPN 2.7.9. It is not an official OpenVPN
+release and is not produced or endorsed by OpenVPN Inc.
+
+Upstream source:  https://github.com/OpenVPN/openvpn
+Upstream tag:     v2.7.9
+Upstream commit:  7b60c2aa34992639691e3a2d651fe27301e2e9d5
+
+Patches applied
+---------------
+
+The transport obfuscation patches come from:
+
+    https://github.com/aw3r1se/ovpn-obfuscate-patches
+
+Applied, in this order:
+
+    general/0001-transport-core.patch
+    udp/0001-enable-udp.patch
+    tcp/0001-enable-tcp.patch
+    wss/0001-enable-wss.patch
+
+Each patch adds source files and build-system detection only. The patched
+tree adds these directives:
+
+    --obfuscate KEY                 TCP Scrambler
+    --obfuscate-udp KEY PADDING     UDP obfuscation
+    --wss-proxy HOST URI            WebSocket-over-TLS transport
+    --wss-proxy-sni [NAME]
+    --wss-proxy-header NAME [VALUE]
+    --wss-proxy-allow-self-signed-cert
+
+Obfuscation requires `--disable-dco`: the transport code runs in userspace,
+above the socket layer, so kernel data-channel offload bypasses it. The client
+also disables DCO on its own whenever an obfuscation transport is configured.
+
+What changed relative to upstream
+---------------------------------
+
+Only the four patches listed above. No upstream source file is modified for
+any other purpose. To reproduce this tree:
+
+    git clone https://github.com/OpenVPN/openvpn.git
+    cd openvpn
+    git checkout --detach v2.7.9
+    git apply <repo>/general/0001-transport-core.patch
+    git apply <repo>/udp/0001-enable-udp.patch
+    git apply <repo>/tcp/0001-enable-tcp.patch
+    git apply <repo>/wss/0001-enable-wss.patch
+
+Build (Windows x64)
+-------------------
+
+Requires Git, Python 3, CMake 3.21+, vcpkg, and a Visual Studio C++ toolset
+with Spectre-mitigated libraries and a Windows SDK. Run from an x64 Native
+Tools Command Prompt so `mc.exe` is on PATH.
+
+    set VCPKG_ROOT=C:\path\to\vcpkg
+    cmake --preset win-amd64-release -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DBUILD_TESTING=ON
+    cmake --build --preset win-amd64-release --parallel
+    ctest --test-dir out\build\win-amd64-release -C Release -R "^test_obfs_" --output-on-failure
+
+Tested with Visual Studio 2022 (MSBuild 17.14) and OpenSSL 3.6.2.
+
+Release contents
+----------------
+
+The Windows x64 archive contains the client, the service wrapper and the adapter
+tool, all built from this tree:
+
+    openvpn.exe             client and server
+    tapctl.exe              create/list/delete VPN adapters
+    openvpnserv.exe         Windows service wrapper
+    openvpnservmsg.dll      event-log message table for the service
+    openvpnmsica.dll        MSI custom actions, used only by installer builds
+    libcrypto-3-x64.dll
+    libssl-3-x64.dll
+    libpkcs11-helper-1.dll
+    legacy.dll              OpenSSL legacy provider, only needed for BF-CBC
+    vcruntime140.dll        omit if the VC++ 2015-2022 Redistributable is installed
+    COPYING
+    LICENSE
+    README.txt
+
+Nothing is required beyond this archive for a client connection, for running
+OpenVPN as a service, or for managing adapters from scripts.
+
+`legacy.dll` is only needed when the server uses BF-CBC. `openvpnmsica.dll` is
+only loaded by MSI-based installers; the other files are unused otherwise.
+
+LZO and LZ4 are linked statically; no extra DLLs are required for compression.
+
+License
+-------
+
+This program is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License version 2 as published by the Free
+Software Foundation.
+
+Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
+Modifications: see "Patches applied" above.
+
+The full license text is in LICENSE. COPYING lists every bundled component and
+the exceptions that apply to it, including the special exception for linking
+with OpenSSL. Binary distributions must ship both files alongside the
+executables.
+
+Source availability: the complete corresponding source for any binary built
+from this tree is this tree itself plus the patch repository named above.
+
+Trademarks
+----------
+
+"OpenVPN" is a trademark of OpenVPN Inc. This build is an independent
+modification; the name is used only to identify the upstream project it is
+derived from.
+
+Original upstream README
+========================
+
+The unmodified upstream README follows.
+
+--------------------------------------------------------------------------
+
 OpenVPN -- A Secure tunneling daemon
 
 Copyright (C) 2002-2026 OpenVPN Inc. This program is free software;
